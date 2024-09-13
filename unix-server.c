@@ -7,56 +7,22 @@
 #include <sys/un.h>
 #include <json-c/json.h>
 #include <sys/stat.h>  // Для chmod
+#include <regex.h>
+#include <arpa/inet.h>
+
 #include <maxminddb.h> // Для работы с libmaxminddb
 
 // #include "./lib/maxminddb.c"
 
 #include "flags.h"
 #include "geo_lookup.h"
+#include "unix-server.h"
 
 #define SOCKET_PATH "/tmp/myserver.sock"
 #define BUFFER_SIZE 1024
 
 // Количество элементов в массиве флагов
 #define FLAGS_COUNT (sizeof(flags) / sizeof(flags[0]))
-
-/**
- * Получает информацию о DNS для указанного домена.
- *
- * Эта функция выполняет команду `dig` для получения списка IP-адресов, связанных с доменом.
- * IP-адреса сохраняются в предоставленный буфер `ips`.
- *
- * @param domain Указатель на строку с доменом, для которого нужно получить IP-адреса.
- * @param ips Указатель на буфер, куда будут записаны IP-адреса.
- * @param ips_size Размер буфера `ips`.
- */
-void get_dns_info(const char *domain, char *ips, size_t ips_size);
-
-/**
- * Обрабатывает соединение с клиентом.
- *
- * Эта функция получает запрос от клиента, извлекает домен из запроса,
- * получает IP-адреса для домена, находит информацию о стране и возвращает её в формате JSON.
- *
- * @param client_sock Дескриптор сокета клиента.
- * @param mmdb Указатель на структуру базы данных MaxMind, предварительно открытая.
- */
-void handle_client(int client_sock, const MMDB_s *mmdb);
-
-/**
- * Получает информацию о стране и флаге по IP-адресу.
- *
- * Эта функция использует IP-адрес для получения кода страны, затем находит
- * соответствующую информацию о флаге по коду страны.
- *
- * @param mmdb Указатель на структуру базы данных MaxMind, предварительно открытая.
- * @param ip Указатель на строку с IP-адресом.
- * @param country_code Указатель на буфер для записи кода страны.
- * @param country_code_size Размер буфера `country_code`.
- *
- * @return Указатель на структуру `Flag`, содержащую информацию о флаге, или NULL, если флаг не найден.
- */
-const Flag *get_geo_info(const MMDB_s *mmdb, const char *ip, char *country_code, size_t country_code_size);
 
 int main()
 {
@@ -143,28 +109,46 @@ int main()
 
 void get_dns_info(const char *domain, char *ips, size_t ips_size)
 {
-    FILE *fp;
-    char command[2048];
-    char buffer[BUFFER_SIZE];
+    FILE *fp;                 /**< Указатель на файл, который будет использоваться для выполнения команды `popen`. */
+    char command[2048];       /**< Массив для хранения команды, которая будет выполнена с помощью popen. */
+    char buffer[BUFFER_SIZE]; /**< Временный буфер для хранения строки, возвращенной командой `dig`. */
+    struct in_addr ipv4_addr; /**< Структура для проверки корректности IP-адреса версии 4. */
 
+    // Выводим полученное имя домена для отладки
     printf("Получена строка: %s\n", domain);
 
+    // Формируем команду для получения DNS-информации
     snprintf(command, sizeof(command), "dig +short %s", domain);
+
+    // Открываем процесс для выполнения команды
     fp = popen(command, "r");
     if (fp == NULL)
     {
+        // Если процесс не удалось открыть, выводим сообщение об ошибке и возвращаемся
         perror("popen");
         return;
     }
 
+    // Очищаем буфер для записи результирующей строки
     ips[0] = '\0';
+
+    // Читаем построчно результат команды dig
     while (fgets(buffer, sizeof(buffer) - 1, fp) != NULL)
     {
+        // Убираем символ новой строки, если он есть
         buffer[strcspn(buffer, "\n")] = '\0';
-        strncat(ips, buffer, ips_size - strlen(ips) - 1);
-        strncat(ips, " ", ips_size - strlen(ips) - 1);
+
+        // Проверяем, является ли строка корректным IPv4-адресом
+        if (inet_pton(AF_INET, buffer, &ipv4_addr) == 1)
+        {
+            // Если строка - это корректный IPv4-адрес, добавляем его в результирующую строку
+            strncat(ips, buffer, ips_size - strlen(ips) - 1);
+            // Добавляем пробел между адресами
+            strncat(ips, " ", ips_size - strlen(ips) - 1);
+        }
     }
 
+    // Закрываем процесс
     pclose(fp);
 }
 
@@ -289,16 +273,28 @@ const Flag *get_geo_info(const MMDB_s *mmdb, const char *ip, char *country_code,
     // Получаем страну по IP-адресу
     country_code = get_country_from_ip(ip, *mmdb);
 
-    // Найти флаг по коду страны
-    for (size_t i = 0; i < FLAGS_COUNT; ++i)
-    {
-        if (strcmp(flags[i].key, country_code) == 0)
+    if(country_code != NULL){
+        // Найти флаг по коду страны
+        for (size_t i = 0; i < FLAGS_COUNT; ++i)
         {
-            return &flags[i];
+            if (strcmp(flags[i].key, country_code) == 0)
+            {
+                return &flags[i];
+            }
         }
-    }
+    }   
 
     return NULL;
+}
+
+int is_valid_ipv4(const char *ip)
+{
+    struct sockaddr_in sa; /**< Структура для хранения результата преобразования строки в IPv4. */
+
+    // Функция inet_pton преобразует строку с IP в двоичный формат.
+    // Если преобразование успешно, функция возвращает ненулевое значение.
+    // Если строка не является валидным IPv4-адресом, функция возвращает 0.
+    return inet_pton(AF_INET, ip, &(sa.sin_addr)) != 0;
 }
 
 // gcc -o unix-server unix-server.c geo_lookup.c -lmaxminddb -ljson-c
