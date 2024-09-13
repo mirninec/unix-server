@@ -14,4 +14,3 @@ COPY . /app
 RUN gcc -o unix-server unix-server.c geo_lookup.c -lmaxminddb -ljson-c
 
 CMD ["/app/unix-server"]
-
