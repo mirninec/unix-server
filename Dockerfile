@@ -1,16 +1,9 @@
-FROM gcc:14
+FROM  ubuntu:20.04
 
-RUN apt-get update && \
-    apt-get install -y \
-    libjson-c-dev dnsutils \
-    libmaxminddb0 libmaxminddb-dev mmdb-bin \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install dnsutils -y
 
 WORKDIR /app
 
-COPY . /app
-
-RUN gcc -o unix-server unix-server.c geo_lookup.c -lmaxminddb -ljson-c
+COPY GeoLite2-City.mmdb unix-server ./
 
 CMD ["/app/unix-server"]
